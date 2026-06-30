@@ -1,0 +1,107 @@
+run_name: olmo1b-sample-run
+seed: 6198
+dry_run: false
+
+# === MODEL (identical to OLMo-1B) ===
+model:
+  d_model: 2048
+  n_heads: 16
+  n_layers: 16
+  mlp_ratio: 8
+  weight_tying: true
+  alibi: false
+  rope: true
+  flash_attention: false
+  attention_dropout: 0.0
+  attention_layer_norm: false
+  multi_query_attention: false
+  include_bias: false
+  block_type: sequential
+  layer_norm_type: default
+  layer_norm_with_affine: false
+  bias_for_layer_norm: false
+  attention_layer_norm_with_affine: false
+  activation_type: swiglu
+  residual_dropout: 0.0
+  embedding_dropout: 0.0
+  max_sequence_length: 2048
+  vocab_size: 50280
+  embedding_size: 50304
+  eos_token_id: 50279
+  pad_token_id: 1
+  init_device: meta
+  init_fn: mitchell
+
+compile: null
+
+# === OPTIMIZER (identical to OLMo-1B) ===
+optimizer:
+  name: adamw
+  learning_rate: 4.0e-4
+  weight_decay: 0.1
+  betas:
+  - 0.9
+  - 0.95
+  metrics_log_interval: 10
+
+scheduler:
+  name: cosine_with_warmup
+  t_warmup: 100        # SCALE-UP: revert to 2000
+  alpha_f: 0.1
+
+tokenizer:
+  identifier: olmo_data/tokenizers/allenai_eleuther-ai-gpt-neox-20b-pii-special.json
+  truncate_direction: right
+
+# SCALE-UP: use SLURM-aware path from original:
+#   ${path.choose:${oc.env:SCRATCH_DIR,no_exist}/checkpoints,/results}/${oc.env:SLURM_JOB_ID,${run_name}}
+save_folder: /disk/u/kerem.sahin/data/checkpoints/${run_name}
+save_overwrite: true   # SCALE-UP: revert to false
+save_interval: 500
+save_num_checkpoints_to_keep: 2
+# SCALE-UP: add back unsharded checkpoints for long-term storage:
+#   save_interval_unsharded: 10000
+#   save_num_unsharded_checkpoints_to_keep: -1
+
+load_path: null
+
+# SCALE-UP: set to ceil(num_tokens / (global_train_batch_size * max_sequence_length))
+# e.g. 30B tokens: ceil(30e9 / (2048 * 2048)) = ~7153 steps at full batch size
+max_duration: 1000
+# SCALE-UP: increase based on GPU count (original: 2048)
+global_train_batch_size: 32
+device_train_microbatch_size: 4
+
+precision: amp_bf16
+
+# SCALE-UP: add back for multi-GPU runs:
+#   fsdp:
+#     wrapping_strategy: null
+#     precision: mixed
+
+max_grad_norm: 1.0
+
+speed_monitor:
+  window_size: 20
+
+# SCALE-UP: add back wandb for experiment tracking:
+#   wandb:
+#     name: ${run_name}
+#     project: olmo-small
+
+# SCALE-UP: add back evaluators from OLMo-1B.yaml for perplexity tracking
+# eval_interval: ${save_interval}
+# eval_subset_num_batches: -1
+# device_eval_batch_size: ${device_train_microbatch_size}
+# evaluators: ...
+
+data:
+  pad_direction: right
+  num_workers: 0
+  drop_last: true
+  pin_memory: true
+  persistent_workers: false  # SCALE-UP: revert to true
+  prefetch_factor: null      # SCALE-UP: revert to 16
+  # SCALE-UP: replace with full list of data paths
+  paths:
+    - /disk/u/kerem.sahin/data/olmo1b_sample.npy
