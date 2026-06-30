@@ -1,0 +1,8 @@
+seed: 6198
+target_tokens: 50000000000
+total_tokens: 64639083780
+paths:
+- https://olmo-data.org/preprocessed/olmo-mix/v1_5/gpt-neox-20b-pii-special/part-035-00000.npy
+- https://olmo-data.org/preprocessed/olmo-mix/v1_5/gpt-neox-20b-pii-special/part-057-00000.npy
+- https://olmo-data.org/preprocessed/olmo-mix/v1_5/gpt-neox-20b-pii-special/part-062-00000.npy
+- https://olmo-data.org/preprocessed/olmo-mix/v1_5/gpt-neox-20b-pii-special/part-008-00000.npy

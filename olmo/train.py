@@ -9,8 +9,9 @@ import os
 import random
 import shutil
 import time
+import types
 from collections import deque
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
@@ -35,6 +36,7 @@ from .config import (
     CheckpointType,
     DDPGradSyncMode,
     DistributedStrategy,
+    RepeatedTokenMaskingMode,
     SchedulerUnits,
     ShardedCheckpointerType,
     SpeedMonitorConfig,
@@ -119,6 +121,158 @@ class LRMonitor:
     def check(self) -> Dict[str, float]:
         lrs = [group["lr"] for group in self.optim.param_groups]
         return {f"optim/learning_rate_group{idx}": lr for idx, lr in enumerate(lrs)}
+
+
+def first_occurrence_mask(input_ids: torch.Tensor, vocab_size: int) -> torch.Tensor:
+    """
+    For each row of ``input_ids`` (shape ``(batch, seq_len)``), return a same-shape
+    bool tensor that is ``True`` at the *first* occurrence of each distinct token id
+    within that row, and ``False`` at every later occurrence of that id (a "repeat").
+
+    Implemented by giving every (row, token id) pair a globally-unique key
+    (``row_index * vocab_size + token_id``), stable-sorting the flattened keys (which
+    keeps equal keys in their original within-row order), and flagging the first key
+    of each equal-run. This is O(N log N) and avoids any Python-level looping.
+    """
+    batch_size, seq_len = input_ids.shape
+    row_offset = torch.arange(batch_size, device=input_ids.device).unsqueeze(1) * vocab_size
+    keys = (row_offset + input_ids).reshape(-1)
+
+    sorted_keys, sort_idx = torch.sort(keys, stable=True)
+    is_first_in_sorted = torch.ones_like(sorted_keys, dtype=torch.bool)
+    is_first_in_sorted[1:] = sorted_keys[1:] != sorted_keys[:-1]
+
+    is_first = torch.zeros_like(is_first_in_sorted)
+    is_first[sort_idx] = is_first_in_sorted
+    return is_first.view(batch_size, seq_len)
+
+
+def repeated_token_loss_mask(
+    input_ids: torch.Tensor, vocab_size: int, mode: RepeatedTokenMaskingMode
+) -> torch.Tensor:
+    """
+    Build a ``(batch, seq_len)`` bool tensor that is ``True`` at positions that should
+    be *excluded* from the loss under the given ``RepeatedTokenMaskingMode``. E.g. for
+    the context "abcdefah" (second "a" at index 6 repeats the one at index 0):
+
+    - ``repeat``: index 6 only.
+    - ``offset``: index 7 only (the position right after the repeat).
+    - ``both``: indices 6 and 7.
+    """
+    is_repeat = ~first_occurrence_mask(input_ids, vocab_size)
+
+    if mode == RepeatedTokenMaskingMode.repeat:
+        return is_repeat
+
+    # Shift right by one: the token *after* a repeat is the one whose prediction could
+    # lean on an induction-style copy shortcut.
+    is_offset = torch.zeros_like(is_repeat)
+    is_offset[:, 1:] = is_repeat[:, :-1]
+
+    if mode == RepeatedTokenMaskingMode.offset:
+        return is_offset
+    elif mode == RepeatedTokenMaskingMode.both:
+        return is_repeat | is_offset
+    else:
+        raise NotImplementedError(mode)
+
+
+def generate_induction_eval_batch(
+    vocab_size: int,
+    batch_size: int,
+    half_seq_len: int,
+    device: torch.device,
+    exclude_token_ids: Tuple[int, ...] = (),
+    seed: int = 0,
+) -> torch.Tensor:
+    """
+    Build a synthetic ``(batch_size, 2 * half_seq_len)`` batch of token ids for the
+    induction/prefix-matching diagnostic: ``half_seq_len`` random tokens followed by an
+    exact repeat of the same tokens. A head that exhibits "prefix matching" will, at a
+    query position in the second half, attend back to the position right after the
+    matching token's earlier occurrence in the first half.
+    """
+    valid_ids = [i for i in range(vocab_size) if i not in exclude_token_ids]
+    valid_ids_t = torch.tensor(valid_ids, dtype=torch.long)
+    generator = torch.Generator().manual_seed(seed)
+    idx = torch.randint(0, len(valid_ids), (batch_size, half_seq_len), generator=generator)
+    half = valid_ids_t[idx]
+    return torch.cat([half, half], dim=1).to(device)
+
+
+def _manual_causal_attention(
+    q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Causal scaled-dot-product attention computed explicitly (rather than via a fused
+    kernel) so the per-head attention probabilities can be inspected. ``q``: (B, n_q_heads,
+    T, hs); ``k``, ``v``: (B, n_kv_heads, T, hs). Returns ``(output, probs)`` where
+    ``probs`` has shape ``(B, n_q_heads, T, T)``.
+    """
+    num_kv_heads, num_q_heads = k.size(1), q.size(1)
+    if num_q_heads != num_kv_heads:
+        assert num_q_heads % num_kv_heads == 0
+        k = k.repeat_interleave(num_q_heads // num_kv_heads, dim=1)
+        v = v.repeat_interleave(num_q_heads // num_kv_heads, dim=1)
+
+    scale = 1.0 / math.sqrt(q.size(-1))
+    scores = torch.matmul(q, k.transpose(-2, -1)) * scale
+    seq_len = q.size(-2)
+    causal_mask = torch.triu(torch.ones(seq_len, seq_len, dtype=torch.bool, device=q.device), diagonal=1)
+    scores = scores.masked_fill(causal_mask, float("-inf"))
+    probs = torch.softmax(scores, dim=-1, dtype=torch.float32).to(q.dtype)
+    return torch.matmul(probs, v), probs
+
+
+@contextmanager
+def capture_attention_patterns(blocks):
+    """
+    Temporarily replace each block's ``_scaled_dot_product_attention`` with
+    ``_manual_causal_attention``, recording the resulting ``(B, n_heads, T, T)``
+    attention probabilities into the yielded ``{layer_idx: probs}`` dict. Restores the
+    original (fused/flash) implementation on exit, regardless of how the `with` block
+    exits, so this has no effect on the normal training/eval forward path.
+    """
+    captured: Dict[int, torch.Tensor] = {}
+
+    def make_patched(layer_idx: int):
+        def patched(self_block, q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False, max_doc_len=None, cu_doc_lens=None):
+            out, probs = _manual_causal_attention(q, k, v)
+            captured[layer_idx] = probs.detach()
+            return out
+
+        return patched
+
+    for layer_idx, block in enumerate(blocks):
+        block._scaled_dot_product_attention = types.MethodType(make_patched(layer_idx), block)
+
+    try:
+        yield captured
+    finally:
+        for block in blocks:
+            del block._scaled_dot_product_attention
+
+
+def prefix_matching_scores(captured: Dict[int, torch.Tensor], half_seq_len: int) -> List[Tuple[int, int, float]]:
+    """
+    Given attention patterns captured from `generate_induction_eval_batch`-style input
+    (shape (B, n_heads, 2*half_seq_len, 2*half_seq_len) per layer), compute each head's
+    prefix-matching score: for query positions q in the second half, how much attention
+    mass it puts on key position (q - half_seq_len + 1) -- the token that followed the
+    earlier occurrence of the current (repeated) token. Returns a flat, unsorted list of
+    (layer_idx, head_idx, score) tuples.
+    """
+    q_idx = torch.arange(half_seq_len, 2 * half_seq_len)
+    k_idx = q_idx - half_seq_len + 1
+
+    results = []
+    for layer_idx, pattern in captured.items():
+        q_idx_d, k_idx_d = q_idx.to(pattern.device), k_idx.to(pattern.device)
+        diag_vals = pattern[:, :, q_idx_d, k_idx_d]  # (B, n_heads, half_seq_len)
+        head_scores = diag_vals.float().mean(dim=(0, 2))  # (n_heads,)
+        for head_idx, score in enumerate(head_scores.tolist()):
+            results.append((layer_idx, head_idx, score))
+    return results
 
 
 def cross_entropy_loss(
@@ -726,6 +880,11 @@ class Trainer:
             labels.masked_fill_(attention_mask == 0.0, -100)
         if instance_mask is not None:
             labels.masked_fill_(~instance_mask.unsqueeze(-1), value=-100)
+        if self.cfg.data.mask_repeated_tokens is not None:
+            repeat_mask = repeated_token_loss_mask(
+                batch["input_ids"], self.cfg.model.vocab_size, self.cfg.data.mask_repeated_tokens
+            )
+            labels.masked_fill_(repeat_mask, value=-100)
         return labels[..., 1:].contiguous()
 
     def model_forward(
@@ -1008,6 +1167,47 @@ class Trainer:
         else:
             return False
 
+    @torch.no_grad()
+    def compute_prefix_matching_metrics(
+        self, half_seq_len: int = 50, batch_size: int = 4, top_k: int = 3
+    ) -> Dict[str, Any]:
+        """
+        Diagnostic for induction-head formation: scores every attention head's
+        "prefix matching" behavior (Olsson et al., 2022) on a synthetic batch of
+        repeated random tokens, and returns the top-k heads by score, plus prints them.
+        """
+        exclude_token_ids = (self.cfg.model.pad_token_id, self.cfg.model.eos_token_id)
+        input_ids = generate_induction_eval_batch(
+            self.cfg.model.vocab_size,
+            batch_size,
+            half_seq_len,
+            self.device,
+            exclude_token_ids=exclude_token_ids,
+            seed=self.cfg.seed,
+        )
+
+        blocks = self.model.transformer.blocks
+        with capture_attention_patterns(blocks) as captured:
+            with torch.autocast("cuda", enabled=True, dtype=self.cfg.autocast_precision):
+                self.dist_model(input_ids=input_ids)
+
+        scores = prefix_matching_scores(captured, half_seq_len)
+        scores.sort(key=lambda x: x[2], reverse=True)
+        top = scores[:top_k]
+
+        log.info(
+            "Top-%d prefix-matching (induction) heads: %s",
+            top_k,
+            ", ".join(f"layer={layer} head={head} score={score:.4f}" for layer, head, score in top),
+        )
+
+        metrics: Dict[str, Any] = {}
+        for rank, (layer_idx, head_idx, score) in enumerate(top, start=1):
+            metrics[f"eval/prefix_matching_top{rank}_score"] = score
+            metrics[f"eval/prefix_matching_top{rank}_layer"] = layer_idx
+            metrics[f"eval/prefix_matching_top{rank}_head"] = head_idx
+        return metrics
+
     def eval(self) -> Dict[str, Any]:
         # Zero gradients and set model to 'eval' mode.
         self.optim.zero_grad(set_to_none=True)
@@ -1047,6 +1247,8 @@ class Trainer:
             self.log_metrics_to_console(f"{evaluator.label}", metrics)
 
             del eval_batches
+
+        eval_metrics.update(self.compute_prefix_matching_metrics())
 
         # Eval compiles a bunch more versions, and the result is terrible. This way we get back to zero.
         if self.cfg.compile is not None:
@@ -1233,6 +1435,8 @@ class Trainer:
                         metrics.update(self.system_metrics())
                         # Learning rate metrics.
                         metrics.update(lr_monitor.check())
+                        # Epoch.
+                        metrics["epoch"] = epoch
 
                     # Log metrics to console.
                     if self.global_step % self.cfg.console_log_interval == 0:
