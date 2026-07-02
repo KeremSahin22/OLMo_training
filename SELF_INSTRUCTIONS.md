@@ -81,18 +81,23 @@ python -c "import torch; print(torch.cuda.is_available(), torch.cuda.device_coun
 
 ### Step 3 — Prepare data
 
-```bash
-# Run on a compute node (not login node) via interactive allocation:
-salloc -A lrn089 -N 1 --gpus-per-node=8 -t 00:30:00 -p batch
+Data prep is CPU-only (tokenization + file I/O) — no GPUs needed.
 
-# Then inside the allocation:
-module load miniforge3/23.11.0-0 rocm/6.2.4 craype-accel-amd-gfx90a
+For small datasets (< ~1M docs), run directly on the login node:
+```bash
+module load miniforge3/23.11.0-0
 conda activate /ccs/home/<username>/.conda/envs/olmo_pretraining
 cd /lustre/orion/lrn089/scratch/<username>/OLMo_training
 
 python scripts/create_sample_data.py \
     --output /lustre/orion/lrn089/scratch/<username>/data/olmo1b_sample.npy \
     --num-docs 10000
+```
+
+For large datasets (millions of docs), use a CPU-only allocation to avoid hogging the login node:
+```bash
+salloc -A lrn089 -N 1 -t 02:00:00 -p batch  # no --gpus-per-node
+# then run the same commands above inside the allocation
 ```
 
 ### Step 4 — Edit config and submit
