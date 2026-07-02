@@ -222,6 +222,8 @@ class Trainer:
     the data loader position on restarts."""
     global_train_tokens_seen: int = 0
     """Tracks the global total number of tokens trained on."""
+    global_effective_tokens_seen: int = 0
+    """Tracks the global total number of non-masked tokens trained on (excludes label-masked positions)."""
     checkpoints: List[Path] = field(default_factory=list)
     unsharded_checkpoints: List[Path] = field(default_factory=list)
     ephemeral_checkpoints: List[Path] = field(default_factory=list)
@@ -325,6 +327,7 @@ class Trainer:
             "global_step": self.global_step,
             "global_train_examples_seen_this_epoch": self.global_train_examples_seen_this_epoch,
             "global_train_tokens_seen": self.global_train_tokens_seen,
+            "global_effective_tokens_seen": self.global_effective_tokens_seen,
             "world_size": get_world_size(),
             "checkpoints": self.checkpoints,
             "unsharded_checkpoints": self.unsharded_checkpoints,
@@ -372,11 +375,13 @@ class Trainer:
             * self.cfg.global_train_batch_size
             * self.cfg.model.max_sequence_length,
         )
+        self.global_effective_tokens_seen = state_dict.get("global_effective_tokens_seen", 0)
 
         if not self.cfg.restore_dataloader:
             self.epoch = 0
             self.global_step = 0
             self.global_train_tokens_seen = 0
+            self.global_effective_tokens_seen = 0
             self.global_train_examples_seen_this_epoch = 0
         elif self.epoch is None:
             self.epoch = checkpoint_epoch
@@ -846,6 +851,22 @@ class Trainer:
 
         # Move tensors to the right device.
         batch = move_to_device(batch, self.device)
+
+        # Count effective (non-masked) tokens. Total tokens always count toward the training budget
+        # regardless of masking; effective tokens track what actually received a loss signal.
+        # Labels are shifted left by 1, so we look at positions [1:].
+        batch_size, seq_len = batch["input_ids"].shape
+        eff_mask = batch["input_ids"].new_ones(batch_size, seq_len - 1, dtype=torch.bool)
+        if (label_mask := batch.get("label_mask")) is not None:
+            eff_mask &= label_mask[..., 1:]
+        if (attention_mask := batch.get("attention_mask")) is not None:
+            eff_mask &= attention_mask[..., 1:] != 0.0
+        if (instance_mask := batch.get("instance_mask")) is not None:
+            eff_mask &= instance_mask
+        local_effective = torch.tensor(eff_mask.sum().item(), device=self.device, dtype=torch.long)
+        dist.all_reduce(local_effective)
+        self.global_effective_tokens_seen += int(local_effective.item())
+        metrics["throughput/effective_tokens"] = self.global_effective_tokens_seen
 
         # Run forward-backward pass.
         ce_batch_loss, z_batch_loss = self.train_batch(batch)

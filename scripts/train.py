@@ -122,6 +122,15 @@ def main(cfg: TrainConfig) -> None:
             tags=cfg.wandb.tags,
             config=cfg.asdict(exclude=["wandb"]),
         )
+        # Register custom x-axes so all metrics can be plotted against either
+        # total tokens seen (all tokens, including masked) or effective tokens
+        # (only tokens that received a loss signal). Switch between them in the
+        # wandb UI by changing the x-axis on any chart.
+        wandb.define_metric("throughput/total_tokens")
+        wandb.define_metric("throughput/effective_tokens")
+        wandb.define_metric("train/*", step_metric="throughput/total_tokens")
+        wandb.define_metric("optim/*", step_metric="throughput/total_tokens")
+        wandb.define_metric("throughput/*", step_metric="throughput/total_tokens")
 
     barrier()
 

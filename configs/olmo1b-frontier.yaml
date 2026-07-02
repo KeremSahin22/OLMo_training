@@ -1,4 +1,9 @@
-run_name: olmo1b-sample-run
+# Frontier (OLCF) config for OLMo-1B replication.
+# Based on olmo1b-sample-run.yaml — replace <username> with your OLCF username before using.
+#
+# Submit with: sbatch scripts/frontier_run.sh
+
+run_name: olmo1b-frontier
 seed: 6198
 dry_run: false
 
@@ -11,7 +16,7 @@ model:
   weight_tying: true
   alibi: false
   rope: true
-  flash_attention: false
+  flash_attention: false  # not supported on MI250X
   attention_dropout: 0.0
   attention_layer_norm: false
   multi_query_attention: false
@@ -32,7 +37,7 @@ model:
   init_device: meta
   init_fn: mitchell
 
-compile: null
+compile: null  # torch.compile is unstable on ROCm
 
 # === OPTIMIZER (identical to OLMo-1B) ===
 optimizer:
@@ -53,10 +58,9 @@ tokenizer:
   identifier: olmo_data/tokenizers/allenai_eleuther-ai-gpt-neox-20b-pii-special.json
   truncate_direction: right
 
-# SCALE-UP: use SLURM-aware path from original:
-#   ${path.choose:${oc.env:SCRATCH_DIR,no_exist}/checkpoints,/results}/${oc.env:SLURM_JOB_ID,${run_name}}
-save_folder: /disk/u/kerem.sahin/data/checkpoints/${run_name}
-save_overwrite: true   # SCALE-UP: revert to false
+# Lustre scratch — fast I/O, 50TB quota, purged after 90 days of inactivity
+save_folder: /lustre/orion/lrn089/scratch/<username>/checkpoints/${run_name}/${oc.env:SLURM_JOB_ID,local}
+save_overwrite: false
 save_interval: 500
 save_num_checkpoints_to_keep: 2
 # SCALE-UP: add back unsharded checkpoints for long-term storage:
@@ -66,40 +70,39 @@ save_num_checkpoints_to_keep: 2
 load_path: null
 
 max_duration: "50e9T"  # 50B total tokens seen (masked tokens still count toward this budget)
-# SCALE-UP: increase based on GPU count (original: 2048)
-global_train_batch_size: 32
+# global_train_batch_size = num_nodes * gpus_per_node * device_train_microbatch_size
+# Default below assumes 1 node × 8 GCDs × 4 = 32. Scale by multiplying num_nodes.
+# e.g. 4 nodes: global_train_batch_size: 128
+# NOTE: MI250X has 64 GB HBM2e per GCD (vs 80 GB on A100) — if you OOM, reduce
+# device_train_microbatch_size first.
+global_train_batch_size: 32   # = 1 node × 8 GCDs × 4 microbatch
 device_train_microbatch_size: 4
 
-precision: amp_bf16
+precision: amp_bf16  # bf16 required on MI250X — fp16 causes NaNs
 
-# SCALE-UP: add back for multi-GPU runs:
-#   fsdp:
-#     wrapping_strategy: null
-#     precision: mixed
+distributed_strategy: fsdp
+fsdp:
+  wrapping_strategy: null
+  precision: mixed
 
 max_grad_norm: 1.0
 
 speed_monitor:
   window_size: 20
 
-# SCALE-UP: add back wandb for experiment tracking:
-#   wandb:
-#     name: ${run_name}
-#     project: olmo-small
+wandb:
+  name: ${run_name}
+  project: olmo-1b-replication
 
 # SCALE-UP: add back evaluators from OLMo-1B.yaml for perplexity tracking
-# eval_interval: ${save_interval}
-# eval_subset_num_batches: -1
-# device_eval_batch_size: ${device_train_microbatch_size}
-# evaluators: ...
 
 data:
   pad_direction: right
-  num_workers: 0
+  num_workers: 4         # more workers than local — Lustre handles parallel I/O well
   drop_last: true
   pin_memory: true
-  persistent_workers: false  # SCALE-UP: revert to true
-  prefetch_factor: null      # SCALE-UP: revert to 16
+  persistent_workers: true   # SCALE-UP default
+  prefetch_factor: 16        # SCALE-UP default
   # SCALE-UP: replace with full list of data paths
   paths:
-    - /disk/u/kerem.sahin/data/olmo1b_sample.npy
+    - /lustre/orion/lrn089/scratch/<username>/data/olmo1b_sample.npy
