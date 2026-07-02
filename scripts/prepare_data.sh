@@ -8,7 +8,7 @@
 #SBATCH -o /lustre/orion/lrn089/scratch/<username>/logs/prepare-data-%j.out
 #SBATCH -e /lustre/orion/lrn089/scratch/<username>/logs/prepare-data-%j.err
 #SBATCH -N 1
-#SBATCH -t 12:00:00
+#SBATCH -t 02:00:00
 #SBATCH -p batch
 
 set -euo pipefail
