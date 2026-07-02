@@ -45,6 +45,7 @@ __all__ = [
     "TokenizerConfig",
     "TrainConfig",
     "PaddingDirection",
+    "RepeatedTokenMaskingMode",
     "TruncationDirection",
     "SpeedMonitorConfig",
     "WandbConfig",
@@ -598,6 +599,25 @@ class PaddingDirection(StrEnum):
     left = "left"
 
 
+class RepeatedTokenMaskingMode(StrEnum):
+    """
+    Variants for excluding the induction/copy shortcut from the loss. Given a context
+    "abcdefah" (second "a" at index 6 repeats the one at index 0):
+
+    - ``repeat``: mask the *repeated token itself* (index 6, the second "a"). The model
+      isn't trained on predicting/reproducing tokens whose identity was already seen.
+    - ``offset``: mask the token that *immediately follows* the repeated token (index 7,
+      "h"), i.e. the prediction made right after seeing a repeat. This is the position
+      where an induction-style copy shortcut could influence the prediction (whether or
+      not the copy would actually be correct), so it's excluded too.
+    - ``both``: mask both of the above (index 6 and index 7).
+    """
+
+    repeat = "repeat"
+    offset = "offset"
+    both = "both"
+
+
 @dataclass
 class InstanceFilterConfig(BaseConfig):
     repetition_max_period: int = 13
@@ -623,6 +643,12 @@ class DataConfig(BaseConfig):
     seed: Optional[int] = None
     instance_filter: Optional[InstanceFilterConfig] = None
     custom_dataset: Optional[CustomDatasetConfig] = None
+    mask_repeated_tokens: Optional[RepeatedTokenMaskingMode] = None
+    """
+    If set, exclude from the loss positions affected by within-context token repeats.
+    See ``RepeatedTokenMaskingMode`` for the available variants. ``None`` (the default)
+    disables this and trains on the full, unmasked loss.
+    """
 
     @property
     def effective_memmap_dtype(self):

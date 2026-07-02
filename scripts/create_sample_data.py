@@ -49,7 +49,7 @@ def main():
             print(f"  {i + 1}/{args.num_docs} docs, {len(all_tokens):,} tokens so far")
 
     arr = np.array(all_tokens, dtype=np.uint16)
-    np.save(args.output, arr)
+    arr.tofile(args.output)
     print(f"\nSaved {len(arr):,} tokens to {args.output}")
     print(f"File size: {arr.nbytes / 1024**2:.1f} MB")
 
