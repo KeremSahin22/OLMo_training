@@ -5,7 +5,7 @@
 #SBATCH -e /lustre/orion/lrn089/scratch/kerem.sahin/logs/%x-%j.err
 #SBATCH -N 1                  # <--- change number of nodes here
 #SBATCH --gpus-per-node=8     # always 8 on Frontier (fixed per node)
-#SBATCH -t 02:00:00
+#SBATCH -t 96:00:00
 #SBATCH -p batch
 
 # Replace kerem.sahin with your OLCF username before submitting.
