@@ -13,6 +13,9 @@ echo "Syncing $WANDB_DIR every ${INTERVAL}s. Ctrl-C to stop."
 
 while true; do
     echo "[$(date '+%H:%M:%S')] Syncing..."
-    wandb sync --sync-all "$WANDB_DIR"
+    # Pass each offline-run dir explicitly so wandb doesn't skip already-seen ones
+    for run_dir in "$WANDB_DIR"/offline-run-*/; do
+        [ -d "$run_dir" ] && wandb sync "$run_dir"
+    done
     sleep "$INTERVAL"
 done
