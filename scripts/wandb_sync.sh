@@ -3,6 +3,9 @@
 # Usage: bash scripts/wandb_sync.sh [interval_seconds]
 #   Default interval: 60 seconds
 
+module load miniforge3/23.11.0-0
+conda activate /ccs/home/kerem.sahin/.conda/envs/olmo_pretraining
+
 WANDB_DIR=/lustre/orion/lrn089/scratch/kerem.sahin/OLMo_training/wandb
 INTERVAL=${1:-60}
 
