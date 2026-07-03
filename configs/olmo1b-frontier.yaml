@@ -94,6 +94,7 @@ speed_monitor:
 wandb:
   name: ${run_name}
   project: olmo-1b-replication
+  entity: null  # use your personal wandb account; override with your team name if needed
 
 # SCALE-UP: add back evaluators from OLMo-1B.yaml for perplexity tracking
 
