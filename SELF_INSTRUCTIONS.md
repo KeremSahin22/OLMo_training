@@ -30,18 +30,19 @@ module load miniforge3/23.11.0-0 rocm/6.2.4 craype-accel-amd-gfx90a
 conda create -p /ccs/home/<username>/.conda/envs/olmo_pretraining python=3.11 -y
 conda activate /ccs/home/<username>/.conda/envs/olmo_pretraining
 
-# ROCm build of PyTorch -- required for MI250X:
-pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/rocm6.2
-
 # Clone repo to Lustre scratch (NOT home -- home is slow and small):
 cd /lustre/orion/lrn089/scratch/<username>
 git clone <repo-url> OLMo_training
 cd OLMo_training
 pip install -e .[all]
 
-# Sanity check:
-python -c "import torch; print(torch.cuda.is_available(), torch.cuda.device_count())"
-# Expected: True 8
+# Install ROCm build of PyTorch AFTER pip install -e .[all] -- doing it before gets
+# overwritten by the CUDA build that .[all] pulls in as a dependency:
+pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/rocm6.2
+
+# Sanity check -- must print True 8, not False 0:
+python -c "import torch; print(torch.version.hip, torch.cuda.is_available(), torch.cuda.device_count())"
+# Expected: 6.2.x True 8
 ```
 
 ## Prepare data (download OLMo-mix shards)
