@@ -6,7 +6,7 @@
 #SBATCH -N 1                  # <--- change number of nodes here
 #SBATCH --gpus-per-node=8     # always 8 on Frontier (fixed per node)
 #SBATCH -t 96:00:00
-#SBATCH -p batch
+#SBATCH -p extended
 
 # Replace kerem.sahin with your OLCF username before submitting.
 # Submit from the repo root: sbatch scripts/frontier_run.sh
