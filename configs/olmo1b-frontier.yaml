@@ -104,6 +104,7 @@ data:
   pin_memory: true
   persistent_workers: true   # SCALE-UP default
   prefetch_factor: 16        # SCALE-UP default
+  mask_repeated_tokens: offset
   paths:
     - /lustre/orion/lrn089/scratch/kerem.sahin/data/olmo-mix-50b/part-035-00000.npy
     - /lustre/orion/lrn089/scratch/kerem.sahin/data/olmo-mix-50b/part-057-00000.npy
