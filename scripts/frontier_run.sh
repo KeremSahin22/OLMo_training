@@ -3,9 +3,9 @@
 #SBATCH -J olmo1b-train
 #SBATCH -o /lustre/orion/lrn089/scratch/kerem.sahin/logs/%x-%j.out
 #SBATCH -e /lustre/orion/lrn089/scratch/kerem.sahin/logs/%x-%j.err
-#SBATCH -N 1                  # <--- change number of nodes here
+#SBATCH -N 4                  # <--- change number of nodes here
 #SBATCH --gpus-per-node=8     # always 8 on Frontier (fixed per node)
-#SBATCH -t 96:00:00
+#SBATCH -t 24:00:00
 #SBATCH -p extended
 
 # Replace kerem.sahin with your OLCF username before submitting.
