@@ -4,6 +4,7 @@
 #   Default interval: 60 seconds
 
 module load miniforge3/23.11.0-0
+source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate /ccs/home/kerem.sahin/.conda/envs/olmo_pretraining
 
 WANDB_DIR=/lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/olmo1b-frontier/wandb/wandb
