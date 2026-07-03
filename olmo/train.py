@@ -1022,6 +1022,11 @@ class Trainer:
             eff_mask &= attention_mask[..., 1:] != 0.0
         if (instance_mask := batch.get("instance_mask")) is not None:
             eff_mask &= instance_mask
+        if self.cfg.data.mask_repeated_tokens is not None:
+            repeat_mask = repeated_token_loss_mask(
+                batch["input_ids"], self.cfg.model.vocab_size, self.cfg.data.mask_repeated_tokens
+            )
+            eff_mask &= ~repeat_mask[..., 1:]
         local_effective = torch.tensor(eff_mask.sum().item(), device=self.device, dtype=torch.long)
         dist.all_reduce(local_effective)
         self.global_effective_tokens_seen += int(local_effective.item())
