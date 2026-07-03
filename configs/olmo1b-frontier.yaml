@@ -59,7 +59,7 @@ tokenizer:
   truncate_direction: right
 
 # Lustre scratch — fast I/O, 50TB quota, purged after 90 days of inactivity
-save_folder: /lustre/orion/lrn089/scratch/<username>/checkpoints/${run_name}/${oc.env:SLURM_JOB_ID,local}
+save_folder: /lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/${run_name}
 save_overwrite: false
 save_interval: 500
 save_num_checkpoints_to_keep: 2
@@ -68,6 +68,7 @@ save_num_checkpoints_to_keep: 2
 #   save_num_unsharded_checkpoints_to_keep: -1
 
 load_path: null
+try_load_latest_save: true  # automatically resume from latest checkpoint on resubmit
 
 max_duration: "50e9T"  # 50B total tokens seen (masked tokens still count toward this budget)
 # global_train_batch_size = num_nodes * gpus_per_node * device_train_microbatch_size
@@ -103,6 +104,8 @@ data:
   pin_memory: true
   persistent_workers: true   # SCALE-UP default
   prefetch_factor: 16        # SCALE-UP default
-  # SCALE-UP: replace with full list of data paths
   paths:
-    - /lustre/orion/lrn089/scratch/<username>/data/olmo1b_sample.npy
+    - /lustre/orion/lrn089/scratch/kerem.sahin/data/olmo-mix-50b/part-035-00000.npy
+    - /lustre/orion/lrn089/scratch/kerem.sahin/data/olmo-mix-50b/part-057-00000.npy
+    - /lustre/orion/lrn089/scratch/kerem.sahin/data/olmo-mix-50b/part-062-00000.npy
+    - /lustre/orion/lrn089/scratch/kerem.sahin/data/olmo-mix-50b/part-008-00000.npy
