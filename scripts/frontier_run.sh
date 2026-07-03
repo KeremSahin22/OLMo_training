@@ -27,8 +27,9 @@ export ROCR_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export MPICH_GPU_SUPPORT_ENABLED=1
 export HF_HOME=/lustre/orion/lrn089/scratch/kerem.sahin/.cache/huggingface
 
-# Get the hostname of the first allocated node for rendezvous
+# Get the IPv4 address of the first allocated node for rendezvous (avoid IPv6 issues)
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_NODELIST" | head -n 1)
+MASTER_ADDR=$(getent ahostsv4 "$MASTER_ADDR" | awk 'NR==1{print $1}')
 
 srun -N $SLURM_NNODES --gpus-per-node=8 \
     python -m torch.distributed.run \

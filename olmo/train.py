@@ -871,7 +871,7 @@ class Trainer:
 
         return output_hooks
 
-    def get_labels(self, batch: Dict[str, Any]) -> torch.Tensor:
+    def get_labels(self, batch: Dict[str, Any], skip_repeat_mask: bool = False) -> torch.Tensor:
         # Labels are just input IDs shifted to the left (first item is ignored).
         labels, label_mask, attention_mask, instance_mask = (
             batch["input_ids"].clone(),
@@ -885,7 +885,7 @@ class Trainer:
             labels.masked_fill_(attention_mask == 0.0, -100)
         if instance_mask is not None:
             labels.masked_fill_(~instance_mask.unsqueeze(-1), value=-100)
-        if self.cfg.data.mask_repeated_tokens is not None:
+        if self.cfg.data.mask_repeated_tokens is not None and not skip_repeat_mask:
             repeat_mask = repeated_token_loss_mask(
                 batch["input_ids"], self.cfg.model.vocab_size, self.cfg.data.mask_repeated_tokens
             )
@@ -918,15 +918,29 @@ class Trainer:
             ce_loss = ce_loss.view(batch["input_ids"].shape[0], -1)
             if z_loss is not None:
                 z_loss = z_loss.view(batch["input_ids"].shape[0], -1)
-        return ce_loss, z_loss, logits
+
+        # Compute unmasked loss (all tokens) for logging — no gradient, read-only metric.
+        ce_loss_all = None
+        if self.cfg.data.mask_repeated_tokens is not None:
+            with torch.no_grad():
+                labels_all = self.get_labels(batch, skip_repeat_mask=True).view(-1)
+                ce_loss_all, _ = self.loss_fn(
+                    logits_for_loss.detach(), labels_all, ignore_index=-100, reduction=loss_reduction, compute_z_loss=False
+                )
+                if loss_reduction == "none":
+                    ce_loss_all = ce_loss_all.view(batch["input_ids"].shape[0], -1)
+
+        return ce_loss, z_loss, logits, ce_loss_all
 
     def train_micro_batch(
         self, micro_batch: Dict[str, Any], batch_size_in_tokens: int
-    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        ce_loss, z_loss, logits = self.model_forward(
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        ce_loss, z_loss, logits, ce_loss_all = self.model_forward(
             micro_batch, compute_z_loss=self.cfg.softmax_auxiliary_loss, loss_reduction="sum"
         )
         ce_loss = ce_loss / batch_size_in_tokens
+        if ce_loss_all is not None:
+            ce_loss_all = ce_loss_all / batch_size_in_tokens
 
         # In case this helps with memory utilization.
         del micro_batch
@@ -941,7 +955,7 @@ class Trainer:
 
         del logits
 
-        return loss, ce_loss, z_loss
+        return loss, ce_loss, z_loss, ce_loss_all
 
     def train_batch(self, batch: Dict[str, Any]) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         # Split into micro-batches.
@@ -953,6 +967,7 @@ class Trainer:
 
         ce_batch_loss = torch.tensor(0.0, device=self.device)
         z_batch_loss = None if not self.cfg.softmax_auxiliary_loss else torch.tensor(0.0, device=self.device)
+        ce_batch_loss_all = None if self.cfg.data.mask_repeated_tokens is None else torch.tensor(0.0, device=self.device)
         num_micro_batches = len(micro_batches)
 
         for micro_batch_idx, micro_batch in enumerate(micro_batches):
@@ -974,7 +989,7 @@ class Trainer:
                 autocast_device = "mps" if self.device.type == "mps" else "cuda"
                 with torch.autocast(autocast_device, enabled=True, dtype=self.cfg.autocast_precision):
                     # Run forward pass.
-                    loss, ce_loss, z_loss = self.train_micro_batch(micro_batch, batch_size_in_tokens)
+                    loss, ce_loss, z_loss, ce_loss_all = self.train_micro_batch(micro_batch, batch_size_in_tokens)
 
                     # Update overall CE batch loss.
                     ce_batch_loss += ce_loss.detach()
@@ -984,6 +999,11 @@ class Trainer:
                         assert z_batch_loss is not None
                         z_batch_loss += z_loss.detach()
 
+                    # Update overall unmasked CE batch loss.
+                    if ce_loss_all is not None:
+                        assert ce_batch_loss_all is not None
+                        ce_batch_loss_all += ce_loss_all.detach()
+
                 # Run backward pass.
                 loss.backward()
 
@@ -991,7 +1011,7 @@ class Trainer:
             for hook in output_hooks:
                 hook.remove()
 
-        return ce_batch_loss, z_batch_loss
+        return ce_batch_loss, z_batch_loss, ce_batch_loss_all
 
     def train_step(self, batch: Dict[str, Any], reduce_global_loss: bool = True) -> Dict[str, float]:
         metrics: Dict[str, float] = {}
@@ -1033,7 +1053,7 @@ class Trainer:
         metrics["throughput/effective_tokens"] = self.global_effective_tokens_seen
 
         # Run forward-backward pass.
-        ce_batch_loss, z_batch_loss = self.train_batch(batch)
+        ce_batch_loss, z_batch_loss, ce_batch_loss_all = self.train_batch(batch)
 
         # Collect loss, potentially reducing over all ranks.
         if reduce_global_loss:
@@ -1042,6 +1062,9 @@ class Trainer:
             if z_batch_loss is not None:
                 dist.reduce(z_batch_loss, 0)
                 z_batch_loss.div_(get_world_size())
+            if ce_batch_loss_all is not None:
+                dist.reduce(ce_batch_loss_all, 0)
+                ce_batch_loss_all.div_(get_world_size())
 
         # Clip gradient norms and collect param/gradient/optim metrics.
         should_log_optim_metrics_this_step = self.should_log_optim_metrics_this_step()
@@ -1085,6 +1108,9 @@ class Trainer:
         metrics["train/Perplexity"] = math.exp(self.cur_train_loss)
         if z_batch_loss is not None:
             metrics["train/ZLoss"] = z_batch_loss.item()
+        if ce_batch_loss_all is not None:
+            metrics["train/CrossEntropyLoss_all_tokens"] = ce_batch_loss_all.item()
+            metrics["train/Perplexity_all_tokens"] = math.exp(ce_batch_loss_all.item())
 
         # Maybe collect post-step optimizer-specific metrics.
         if should_log_optim_metrics_this_step:
@@ -1096,18 +1122,19 @@ class Trainer:
 
         return metrics
 
-    def eval_batch(self, batch: Dict[str, Any]) -> Tuple[torch.Tensor, torch.Tensor]:
+    def eval_batch(self, batch: Dict[str, Any]) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         with torch.autocast("cuda", enabled=True, dtype=self.cfg.autocast_precision):
-            ce_loss, _, logits = self.model_forward(batch, loss_reduction="none")
-        return ce_loss.mean(dim=-1), logits
+            ce_loss, _, logits, ce_loss_all = self.model_forward(batch, loss_reduction="none")
+        ce_loss_all_mean = ce_loss_all.mean() if ce_loss_all is not None else None
+        return ce_loss.mean(dim=-1), logits, ce_loss_all_mean
 
-    def eval_step(self, batch: Dict[str, Any], evaluator: Evaluator) -> None:
+    def eval_step(self, batch: Dict[str, Any], evaluator: Evaluator) -> Optional[torch.Tensor]:
         # Move tensors to the right device.
         batch = move_to_device(batch, self.device)
 
         # Run forward pass.
         with torch.no_grad():  # NOTE: 'torch.inference_mode()' doesn't work with 'torch.compile()'.
-            ce_loss, logits = self.eval_batch(batch)
+            ce_loss, logits, ce_loss_all = self.eval_batch(batch)
 
         # Update metrics.
         evaluator.update_metrics(
@@ -1115,6 +1142,7 @@ class Trainer:
         )  # batch includes all keys that the downstream evaluation needs
 
         barrier()
+        return ce_loss_all
 
     def split_batch(self, batch: Dict[str, Any]) -> List[Dict[str, Any]]:
         microbatch_size = self.cfg.device_train_microbatch_size
@@ -1260,8 +1288,13 @@ class Trainer:
                 eval_batches = islice(eval_batches, num_eval_batches)
 
             # Run model over batches.
+            ce_loss_all_sum = torch.tensor(0.0, device=self.device)
+            ce_loss_all_count = 0
             for eval_step, eval_batch in enumerate(eval_batches):
-                self.eval_step(eval_batch, evaluator)
+                ce_loss_all = self.eval_step(eval_batch, evaluator)
+                if ce_loss_all is not None:
+                    ce_loss_all_sum += ce_loss_all.detach()
+                    ce_loss_all_count += 1
 
                 # Log to console.
                 if eval_step + 1 == num_eval_batches or (eval_step + 1) % self.cfg.console_log_interval == 0:
@@ -1269,6 +1302,10 @@ class Trainer:
 
             # Get final metrics.
             metrics = evaluator.compute_metrics()
+            if ce_loss_all_count > 0:
+                ce_loss_all_mean = (ce_loss_all_sum / ce_loss_all_count).item()
+                metrics[f"{evaluator.label}/CrossEntropyLoss_all_tokens"] = ce_loss_all_mean
+                metrics[f"{evaluator.label}/Perplexity_all_tokens"] = math.exp(ce_loss_all_mean)
             eval_metrics.update(metrics)
             self.log_metrics_to_console(f"{evaluator.label}", metrics)
 
