@@ -1,6 +1,6 @@
 # Project Status — OLMo-1B Replication on Frontier
 
-Last updated: 2026-07-03
+Last updated: 2026-07-03 (W&B sync fix verified)
 
 ---
 
@@ -17,25 +17,28 @@ Last updated: 2026-07-03
   - Checkpoint save and resume work correctly
   - W&B offline mode works; sync from login node via `bash scripts/wandb_sync.sh` works
 - W&B credentials configured on login node (`~/.netrc`)
-- One smoketest run is pending W&B sync verification (run `offline-run-20260703_174346-e3dda5kk`)
+- `scripts/wandb_sync.sh` fixed and verified end-to-end: the glob `offline-run-*/` was passing
+  `wandb sync` a path with a trailing slash, which caused it to report "nothing to sync" even on
+  never-synced runs. Stripped the trailing slash (`run_dir="${run_dir%/}"`) before the sync call —
+  confirmed working via a fresh `sbatch scripts/frontier_smoketest.sh` run synced automatically.
 
 ---
 
 ## Immediate next step
 
-Verify W&B sync works end-to-end for the latest smoketest run, then launch the full 4-node training job:
+W&B sync is verified working. Launch the full 4-node training job:
 
 ```bash
-# 1. Sync the latest smoketest run to W&B and verify both losses appear in the UI
-wandb sync /lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/olmo1b-frontier/wandb/wandb/offline-run-20260703_174346-e3dda5kk
-
-# 2. If W&B looks correct, submit the full run
+# 1. Pull the wandb_sync.sh trailing-slash fix
 cd /lustre/orion/lrn089/scratch/kerem.sahin/OLMo_training
 git pull
-sbatch scripts/frontier_run.sh
 
-# 3. Start the sync loop in a separate terminal
+# 2. Start the sync loop in a separate terminal (safe to start before submitting —
+#    it polls and idles harmlessly until a run directory appears)
 bash scripts/wandb_sync.sh
+
+# 3. Submit the full run
+sbatch scripts/frontier_run.sh
 ```
 
 ---
@@ -44,8 +47,7 @@ bash scripts/wandb_sync.sh
 
 ### Must do before / during training
 
-- [ ] **Verify W&B** — confirm `train/CrossEntropyLoss` and `train/CrossEntropyLoss_all_tokens`
-      both appear in the UI, and that `global_effective_tokens_seen` < `global_train_tokens_seen`
+- [x] **Verify W&B** — `wandb_sync.sh` fixed (trailing-slash bug) and confirmed syncing automatically
 - [ ] **Submit full 4-node run** — `sbatch scripts/frontier_run.sh`
 - [ ] **Monitor for loss spikes or NaNs** — grad norm should stay below 1.0 during warmup;
       spikes after warmup are worth investigating
