@@ -22,18 +22,12 @@ export MPICH_GPU_SUPPORT_ENABLED=1
 export NCCL_DEBUG=INFO
 export NCCL_DEBUG_SUBSYS=INIT,NET
 
-# ===================== NETWORK ENV (toggle to test) =====================
-# Step A — load the RCCL/libfabric plugin once you locate it (one of these):
-#   module load <rccl-ofi-plugin-module>
-#   export LD_LIBRARY_PATH=/path/to/aws-ofi-rccl/lib:$LD_LIBRARY_PATH
-#
-# Step B — Frontier Slingshot/CXI env (safe once the plugin above is active):
-# export NCCL_SOCKET_IFNAME=hsn0
-# export NCCL_NET_GDR_LEVEL=3
-# export NCCL_CROSS_NIC=1
-# export FI_CXI_DEFAULT_CQ_SIZE=131072
-# export FI_MR_CACHE_MONITOR=userfaultfd
-# ========================================================================
+# ========================= TRANSPORT TOGGLE =========================
+# Baseline run: leave the line below commented -> RCCL falls back to TCP sockets (slow).
+# Fix run: uncomment it -> RCCL uses Slingshot. The module also sets all the correct
+# NCCL_*/FI_CXI_* env itself, so nothing else should be set by hand.
+#   module load rccl-net-plugin/1.0
+# ====================================================================
 
 # IPv4 rendezvous address of the first node in the allocation (avoid IPv6 issues).
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_NODELIST" | head -n 1)

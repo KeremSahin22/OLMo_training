@@ -16,7 +16,7 @@
 #   global_train_batch_size = N_nodes * 8 * device_train_microbatch_size
 #   e.g. 4 nodes: 4 * 8 * 4 = 128
 
-module load miniforge3/23.11.0-0 rocm/6.2.4 craype-accel-amd-gfx90a
+module load miniforge3/23.11.0-0 rocm/6.2.4 craype-accel-amd-gfx90a rccl-net-plugin/1.0
 
 conda activate /ccs/home/kerem.sahin/.conda/envs/olmo_pretraining
 
@@ -30,18 +30,11 @@ export HF_HOME=/lustre/orion/lrn089/scratch/kerem.sahin/.cache/huggingface
 export WANDB_MODE=offline
 
 # --- Distributed transport (RCCL over Slingshot) ---
-# Quiet by default; submit with `NCCL_DEBUG=INFO sbatch scripts/frontier_run.sh` to diagnose.
+# rccl-net-plugin/1.0 (loaded above) routes RCCL over the Slingshot/CXI fabric instead of TCP
+# sockets, and sets the correct NCCL_*/FI_CXI_* env itself — do NOT override those by hand.
+# NCCL_DEBUG is quiet by default; submit with `NCCL_DEBUG=INFO sbatch scripts/frontier_run.sh`
+# and grep the log for 'NET/OFI' to confirm the fast transport on the first steps.
 export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
-#
-# Once validated with scripts/frontier_nccl_test.sh, enable the RCCL/OFI plugin + Slingshot
-# env here for full inter-node bandwidth (uncomment and fill in the plugin path/module):
-#   module load <rccl-ofi-plugin-module>
-#   export LD_LIBRARY_PATH=/path/to/aws-ofi-rccl/lib:$LD_LIBRARY_PATH
-#   export NCCL_SOCKET_IFNAME=hsn0
-#   export NCCL_NET_GDR_LEVEL=3
-#   export NCCL_CROSS_NIC=1
-#   export FI_CXI_DEFAULT_CQ_SIZE=131072
-#   export FI_MR_CACHE_MONITOR=userfaultfd
 
 # Get the IPv4 address of the first allocated node for rendezvous (avoid IPv6 issues)
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_NODELIST" | head -n 1)
