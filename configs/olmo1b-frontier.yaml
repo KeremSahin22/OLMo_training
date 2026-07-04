@@ -60,7 +60,7 @@ tokenizer:
 
 # Lustre scratch — fast I/O, 50TB quota, purged after 90 days of inactivity
 save_folder: /lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/${run_name}
-save_overwrite: false
+save_overwrite: true  # required with try_load_latest_save: rewrites config.yaml/data-indices on each (re)launch. Resume is still gated by an actual checkpoint, not this flag.
 save_interval: 500
 save_num_checkpoints_to_keep: 2
 # SCALE-UP: add back unsharded checkpoints for long-term storage:
