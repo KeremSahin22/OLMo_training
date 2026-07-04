@@ -29,6 +29,20 @@ export HF_HOME=/lustre/orion/lrn089/scratch/kerem.sahin/.cache/huggingface
 # Compute nodes block outbound internet; log wandb offline and sync from login node after.
 export WANDB_MODE=offline
 
+# --- Distributed transport (RCCL over Slingshot) ---
+# Quiet by default; submit with `NCCL_DEBUG=INFO sbatch scripts/frontier_run.sh` to diagnose.
+export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
+#
+# Once validated with scripts/frontier_nccl_test.sh, enable the RCCL/OFI plugin + Slingshot
+# env here for full inter-node bandwidth (uncomment and fill in the plugin path/module):
+#   module load <rccl-ofi-plugin-module>
+#   export LD_LIBRARY_PATH=/path/to/aws-ofi-rccl/lib:$LD_LIBRARY_PATH
+#   export NCCL_SOCKET_IFNAME=hsn0
+#   export NCCL_NET_GDR_LEVEL=3
+#   export NCCL_CROSS_NIC=1
+#   export FI_CXI_DEFAULT_CQ_SIZE=131072
+#   export FI_MR_CACHE_MONITOR=userfaultfd
+
 # Get the IPv4 address of the first allocated node for rendezvous (avoid IPv6 issues)
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_NODELIST" | head -n 1)
 MASTER_ADDR=$(getent ahostsv4 "$MASTER_ADDR" | awk 'NR==1{print $1}')

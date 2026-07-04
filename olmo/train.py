@@ -933,14 +933,20 @@ class Trainer:
         return ce_loss, z_loss, logits, ce_loss_all
 
     def train_micro_batch(
-        self, micro_batch: Dict[str, Any], batch_size_in_tokens: int
+        self, micro_batch: Dict[str, Any], ce_denom: float, ce_all_denom: float
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         ce_loss, z_loss, logits, ce_loss_all = self.model_forward(
             micro_batch, compute_z_loss=self.cfg.softmax_auxiliary_loss, loss_reduction="sum"
         )
-        ce_loss = ce_loss / batch_size_in_tokens
+        # Normalize by the number of *effective* (loss-bearing) tokens so the CE is a true
+        # per-token mean over the tokens that actually receive a gradient, rather than being
+        # deflated by the masking fraction. `ce_denom` / `ce_all_denom` are (global token count
+        # / world_size), so after FSDP/DDP averages gradients across ranks the result is the
+        # global mean CE per effective / base token. ce_all uses the base-token count (repeat-
+        # masked positions included) for its diagnostic metric.
+        ce_loss = ce_loss / ce_denom
         if ce_loss_all is not None:
-            ce_loss_all = ce_loss_all / batch_size_in_tokens
+            ce_loss_all = ce_loss_all / ce_all_denom
 
         # In case this helps with memory utilization.
         del micro_batch
@@ -948,7 +954,7 @@ class Trainer:
         # Get loss to optimize for.
         if self.cfg.softmax_auxiliary_loss:
             assert z_loss is not None
-            z_loss = z_loss / batch_size_in_tokens
+            z_loss = z_loss / ce_denom
             loss = ce_loss + z_loss
         else:
             loss = ce_loss
@@ -957,10 +963,11 @@ class Trainer:
 
         return loss, ce_loss, z_loss, ce_loss_all
 
-    def train_batch(self, batch: Dict[str, Any]) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def train_batch(
+        self, batch: Dict[str, Any], ce_denom: float, ce_all_denom: float
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         # Split into micro-batches.
         micro_batches = self.split_batch(batch)
-        batch_size_in_tokens = batch["input_ids"].numel()
 
         # In case this helps with memory utilization.
         del batch
@@ -1031,29 +1038,44 @@ class Trainer:
         # Move tensors to the right device.
         batch = move_to_device(batch, self.device)
 
-        # Count effective (non-masked) tokens. Total tokens always count toward the training budget
-        # regardless of masking; effective tokens track what actually received a loss signal.
-        # Labels are shifted left by 1, so we look at positions [1:].
+        # Count tokens for loss normalization and budget tracking. Total tokens always count toward
+        # the training budget regardless of masking; effective tokens track what actually received a
+        # loss signal. Labels are shifted left by 1, so we look at positions [1:].
+        #   base_mask = positions with a valid label (pad / attention / instance masking applied)
+        #   eff_mask  = base_mask minus repeated-token positions (what the masked CE trains on)
         batch_size, seq_len = batch["input_ids"].shape
-        eff_mask = batch["input_ids"].new_ones(batch_size, seq_len - 1, dtype=torch.bool)
+        base_mask = batch["input_ids"].new_ones(batch_size, seq_len - 1, dtype=torch.bool)
         if (label_mask := batch.get("label_mask")) is not None:
-            eff_mask &= label_mask[..., 1:]
+            base_mask &= label_mask[..., 1:]
         if (attention_mask := batch.get("attention_mask")) is not None:
-            eff_mask &= attention_mask[..., 1:] != 0.0
+            base_mask &= attention_mask[..., 1:] != 0.0
         if (instance_mask := batch.get("instance_mask")) is not None:
-            eff_mask &= instance_mask
+            base_mask &= instance_mask
+        eff_mask = base_mask.clone()
         if self.cfg.data.mask_repeated_tokens is not None:
             repeat_mask = repeated_token_loss_mask(
                 batch["input_ids"], self.cfg.model.vocab_size, self.cfg.data.mask_repeated_tokens
             )
             eff_mask &= ~repeat_mask[..., 1:]
-        local_effective = torch.tensor(eff_mask.sum().item(), device=self.device, dtype=torch.long)
-        dist.all_reduce(local_effective)
-        self.global_effective_tokens_seen += int(local_effective.item())
+        # Single collective for both global counts: [effective (kept) tokens, base (all-label) tokens].
+        token_counts = torch.tensor(
+            [int(eff_mask.sum().item()), int(base_mask.sum().item())], device=self.device, dtype=torch.long
+        )
+        dist.all_reduce(token_counts)
+        global_effective = int(token_counts[0].item())
+        global_base = int(token_counts[1].item())
+        self.global_effective_tokens_seen += global_effective
         metrics["throughput/effective_tokens"] = self.global_effective_tokens_seen
 
+        # Per-rank loss denominators. Dividing by (global token count / world_size) means that after
+        # FSDP/DDP averages gradients across ranks, the backpropped gradient is the mean CE per
+        # *effective* token (not per total token). max(..., 1) guards the degenerate all-masked case.
+        world_size = get_world_size()
+        ce_denom = max(global_effective, 1) / world_size
+        ce_all_denom = max(global_base, 1) / world_size
+
         # Run forward-backward pass.
-        ce_batch_loss, z_batch_loss, ce_batch_loss_all = self.train_batch(batch)
+        ce_batch_loss, z_batch_loss, ce_batch_loss_all = self.train_batch(batch, ce_denom, ce_all_denom)
 
         # Collect loss, potentially reducing over all ranks.
         if reduce_global_loss:
