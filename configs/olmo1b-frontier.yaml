@@ -104,7 +104,7 @@ data:
   drop_last: true
   pin_memory: true
   persistent_workers: true   # SCALE-UP default
-  prefetch_factor: 16        # SCALE-UP default
+  prefetch_factor: 2         # lowered from 16 to reduce DataLoader mmap/shm memory pressure (SIGBUS mitigation)
   mask_repeated_tokens: offset
   paths:
     - /lustre/orion/lrn089/scratch/kerem.sahin/data/olmo-mix-50b/part-035-00000.npy
