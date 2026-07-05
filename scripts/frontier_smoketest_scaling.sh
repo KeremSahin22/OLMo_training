@@ -10,11 +10,13 @@
 #   salloc -A lrn089 -N 2 --gpus-per-node=8 -t 01:00:00 -p batch
 # then, from the repo root, run variants back-to-back:
 #   SHARDING=FULL_SHARD   bash scripts/frontier_smoketest_scaling.sh   # baseline (current config)
-#   SHARDING=HYBRID_SHARD bash scripts/frontier_smoketest_scaling.sh   # the proposed fix
+#   SHARDING=HYBRID_SHARD bash scripts/frontier_smoketest_scaling.sh   # sharded within node
 #   SHARDING=HYBRID_SHARD MBS=8 bash scripts/frontier_smoketest_scaling.sh  # + bigger microbatch
+#   STRATEGY=ddp          bash scripts/frontier_smoketest_scaling.sh   # NO sharding (model fits)
+#   STRATEGY=ddp MBS=8    bash scripts/frontier_smoketest_scaling.sh   # DDP + bigger microbatch (~54 GB)
 #
 # Compare the 'throughput/device/tokens_per_second' line (steady-state, after ~step 30)
-# across runs. Higher = better. Watch peak GPU memory too (stays well under 64 GB).
+# across runs. Higher = better. Watch peak GPU memory too (stays under 64 GB).
 
 module load miniforge3/23.11.0-0 rocm/6.2.4 craype-accel-amd-gfx90a rccl-net-plugin/1.0
 conda activate /ccs/home/kerem.sahin/.conda/envs/olmo_pretraining
@@ -25,17 +27,27 @@ export MPICH_GPU_SUPPORT_ENABLED=1
 export WANDB_MODE=offline
 
 # ---- knobs (override on the command line) ----
-SHARDING=${SHARDING:-FULL_SHARD}   # FULL_SHARD | HYBRID_SHARD
+STRATEGY=${STRATEGY:-fsdp}          # fsdp | ddp   (ddp = no sharding, full model per GCD)
+SHARDING=${SHARDING:-FULL_SHARD}    # FULL_SHARD | HYBRID_SHARD  (only used when STRATEGY=fsdp)
 MBS=${MBS:-4}                       # device_train_microbatch_size
 STEPS=${STEPS:-80}                  # enough to reach steady-state past warmup
 GBS=$(( SLURM_NNODES * 8 * MBS ))   # keep grad-accum realistic for the node count
 
-echo ">>> sharding=$SHARDING  microbatch=$MBS  nodes=$SLURM_NNODES  global_batch=$GBS  steps=$STEPS"
+# Strategy-specific flags + a short tag used for the log/checkpoint folder names.
+if [ "$STRATEGY" = "ddp" ]; then
+    STRAT_ARGS=(--distributed_strategy=ddp --ddp.grad_sync_mode=batch --ddp.find_unused_params=false)
+    TAG="ddp-mbs${MBS}"
+else
+    STRAT_ARGS=(--distributed_strategy=fsdp --fsdp.sharding_strategy=${SHARDING})
+    TAG="${SHARDING}-mbs${MBS}"
+fi
+
+echo ">>> strategy=$STRATEGY  $( [ "$STRATEGY" = fsdp ] && echo "sharding=$SHARDING" )  microbatch=$MBS  nodes=$SLURM_NNODES  global_batch=$GBS  steps=$STEPS"
 
 # Persist output so throughput numbers survive after the terminal scrolls (wandb is off here).
 LOGDIR=/lustre/orion/lrn089/scratch/kerem.sahin/logs
 mkdir -p "$LOGDIR"
-LOG="$LOGDIR/smoke-${SHARDING}-mbs${MBS}-$(date +%H%M%S).log"
+LOG="$LOGDIR/smoke-${TAG}-$(date +%H%M%S).log"
 echo ">>> logging to $LOG"
 
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_NODELIST" | head -n 1)
@@ -49,16 +61,16 @@ srun -N "$SLURM_NNODES" --gpus-per-node=8 \
     --rdzv_backend=c10d \
     --rdzv_endpoint="$MASTER_ADDR:29500" \
     scripts/train.py configs/olmo1b-frontier.yaml \
-    --run_name=smoke-${SHARDING}-mbs${MBS} \
+    --run_name=smoke-${TAG} \
     --max_duration=${STEPS} \
     --global_train_batch_size=${GBS} \
     --device_train_microbatch_size=${MBS} \
-    --fsdp.sharding_strategy=${SHARDING} \
+    "${STRAT_ARGS[@]}" \
     --try_load_latest_save=false \
-    --save_folder=/lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/smoke-${SHARDING}-mbs${MBS} \
+    --save_folder=/lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/smoke-${TAG} \
     --save_overwrite=true \
     --wandb=null 2>&1 | tee "$LOG"
 
 echo ""
-echo ">>> throughput lines for $SHARDING mbs=$MBS (read the steady-state value past ~step 30):"
+echo ">>> throughput lines for $TAG (read the steady-state value past ~step 30):"
 grep -i "tokens_per_second" "$LOG" | tail -20
