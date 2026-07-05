@@ -32,6 +32,12 @@ GBS=$(( SLURM_NNODES * 8 * MBS ))   # keep grad-accum realistic for the node cou
 
 echo ">>> sharding=$SHARDING  microbatch=$MBS  nodes=$SLURM_NNODES  global_batch=$GBS  steps=$STEPS"
 
+# Persist output so throughput numbers survive after the terminal scrolls (wandb is off here).
+LOGDIR=/lustre/orion/lrn089/scratch/kerem.sahin/logs
+mkdir -p "$LOGDIR"
+LOG="$LOGDIR/smoke-${SHARDING}-mbs${MBS}-$(date +%H%M%S).log"
+echo ">>> logging to $LOG"
+
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_NODELIST" | head -n 1)
 MASTER_ADDR=$(getent ahostsv4 "$MASTER_ADDR" | awk 'NR==1{print $1}')
 
@@ -48,6 +54,11 @@ srun -N "$SLURM_NNODES" --gpus-per-node=8 \
     --global_train_batch_size=${GBS} \
     --device_train_microbatch_size=${MBS} \
     --fsdp.sharding_strategy=${SHARDING} \
-    --save_folder=/lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/smoke \
+    --try_load_latest_save=false \
+    --save_folder=/lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/smoke-${SHARDING}-mbs${MBS} \
     --save_overwrite=true \
-    --wandb=null
+    --wandb=null 2>&1 | tee "$LOG"
+
+echo ""
+echo ">>> throughput lines for $SHARDING mbs=$MBS (read the steady-state value past ~step 30):"
+grep -i "tokens_per_second" "$LOG" | tail -20
