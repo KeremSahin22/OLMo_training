@@ -35,7 +35,9 @@ GBS=$(( SLURM_NNODES * 8 * MBS ))   # keep grad-accum realistic for the node cou
 
 # Strategy-specific flags + a short tag used for the log/checkpoint folder names.
 if [ "$STRATEGY" = "ddp" ]; then
-    STRAT_ARGS=(--distributed_strategy=ddp --ddp.grad_sync_mode=batch --ddp.find_unused_params=false)
+    # DDP builds the full model directly on GPU, so it needs init_device=cuda
+    # (the yaml uses meta, which is required by FSDP but rejected by DDP).
+    STRAT_ARGS=(--distributed_strategy=ddp --ddp.grad_sync_mode=batch --ddp.find_unused_params=false --model.init_device=cuda)
     TAG="ddp-mbs${MBS}"
 else
     STRAT_ARGS=(--distributed_strategy=fsdp --fsdp.sharding_strategy=${SHARDING})
