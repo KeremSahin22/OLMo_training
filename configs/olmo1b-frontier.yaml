@@ -63,7 +63,7 @@ tokenizer:
 # Lustre scratch — fast I/O, 50TB quota, purged after 90 days of inactivity
 save_folder: /lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/${run_name}
 save_overwrite: true  # required with try_load_latest_save: rewrites config.yaml/data-indices on each (re)launch. Resume is still gated by an actual checkpoint, not this flag.
-save_interval: 500
+save_interval: 100
 save_num_checkpoints_to_keep: 2
 # SCALE-UP: add back unsharded checkpoints for long-term storage:
 #   save_interval_unsharded: 10000
@@ -79,12 +79,17 @@ max_duration: "50e9T"  # 50B total tokens seen (masked tokens still count toward
 # NOTE: MI250X has 64 GB HBM2e per GCD (vs 80 GB on A100) — if you OOM, reduce
 # device_train_microbatch_size first.
 global_train_batch_size: 2048  # matches original OLMo-1B; gradient accumulation handled automatically
-device_train_microbatch_size: 4
+device_train_microbatch_size: 8  # smoke-tested: ~6,550 tok/s/GCD, 47.6 GB peak with hybrid_shard (mbs=4 was ~5,120)
 
 precision: amp_bf16  # bf16 required on MI250X — fp16 causes NaNs
 
 distributed_strategy: fsdp
 fsdp:
+  # HYBRID_SHARD: shard the model 8-way *within* each node (fast xGMI), replicate across the 4
+  # nodes so inter-node traffic is just one gradient all-reduce/step instead of FULL_SHARD's
+  # per-layer all-gathers over Slingshot. Smoke-tested ~8% faster than FULL_SHARD and, by keeping
+  # the optimizer sharded, leaves the headroom that lets device_train_microbatch_size=8 fit.
+  sharding_strategy: HYBRID_SHARD
   wrapping_strategy: null
   precision: mixed
 
