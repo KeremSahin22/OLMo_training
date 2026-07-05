@@ -31,6 +31,7 @@ STRATEGY=${STRATEGY:-fsdp}          # fsdp | ddp   (ddp = no sharding, full mode
 SHARDING=${SHARDING:-FULL_SHARD}    # FULL_SHARD | HYBRID_SHARD  (only used when STRATEGY=fsdp)
 MBS=${MBS:-4}                       # device_train_microbatch_size
 STEPS=${STEPS:-80}                  # enough to reach steady-state past warmup
+COMPILE=${COMPILE:-}                # empty = off; else a torch.compile mode: default | reduce-overhead | max-autotune
 GBS=$(( SLURM_NNODES * 8 * MBS ))   # keep grad-accum realistic for the node count
 
 # Strategy-specific flags + a short tag used for the log/checkpoint folder names.
@@ -42,6 +43,15 @@ if [ "$STRATEGY" = "ddp" ]; then
 else
     STRAT_ARGS=(--distributed_strategy=fsdp --fsdp.sharding_strategy=${SHARDING})
     TAG="${SHARDING}-mbs${MBS}"
+fi
+
+# Optional torch.compile (per-block, FSDP-compatible). First step is slow (compilation);
+# read steady-state past ~step 30. STEPS is bumped so there's a post-compile window.
+COMPILE_ARGS=()
+if [ -n "$COMPILE" ]; then
+    COMPILE_ARGS=(--compile.mode="$COMPILE")
+    TAG="${TAG}-compile-${COMPILE}"
+    STEPS=$(( STEPS < 120 ? 120 : STEPS ))
 fi
 
 echo ">>> strategy=$STRATEGY  $( [ "$STRATEGY" = fsdp ] && echo "sharding=$SHARDING" )  microbatch=$MBS  nodes=$SLURM_NNODES  global_batch=$GBS  steps=$STEPS"
@@ -68,6 +78,7 @@ srun -N "$SLURM_NNODES" --gpus-per-node=8 \
     --global_train_batch_size=${GBS} \
     --device_train_microbatch_size=${MBS} \
     "${STRAT_ARGS[@]}" \
+    "${COMPILE_ARGS[@]}" \
     --try_load_latest_save=false \
     --save_folder=/lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/smoke-${TAG} \
     --save_overwrite=true \
