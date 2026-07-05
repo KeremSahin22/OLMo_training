@@ -12,9 +12,14 @@
 # Submit from the repo root: sbatch scripts/frontier_run.sh
 # Create log dir first: mkdir -p /lustre/orion/lrn089/scratch/kerem.sahin/logs
 #
-# When changing -N above, also update global_train_batch_size in olmo1b-frontier.yaml:
-#   global_train_batch_size = N_nodes * 8 * device_train_microbatch_size
-#   e.g. 4 nodes: 4 * 8 * 4 = 128
+# global_train_batch_size in olmo1b-frontier.yaml is FIXED at 2048 (matches OLMo-1B) and is
+# INDEPENDENT of node count — OLMo derives grad-accumulation automatically:
+#   device_train_batch_size = 2048 / (N_nodes * 8)   # 4 nodes -> 64 per GCD
+#   grad_accum_microsteps    = device_train_batch_size / device_train_microbatch_size(=8)  # -> 8
+# So changing -N only changes how many microsteps accumulate per step; do NOT lower
+# global_train_batch_size to N*8*mbs (that was the smoke-test convention and would shrink
+# the batch ~16x, breaking the replication). Peak memory is set by mbs=8 (~47.6 GB), unchanged
+# by grad accumulation.
 
 module load miniforge3/23.11.0-0 rocm/6.2.4 craype-accel-amd-gfx90a rccl-net-plugin/1.0
 
