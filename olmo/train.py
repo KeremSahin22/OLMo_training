@@ -996,7 +996,7 @@ class Trainer:
                 autocast_device = "mps" if self.device.type == "mps" else "cuda"
                 with torch.autocast(autocast_device, enabled=True, dtype=self.cfg.autocast_precision):
                     # Run forward pass.
-                    loss, ce_loss, z_loss, ce_loss_all = self.train_micro_batch(micro_batch, batch_size_in_tokens)
+                    loss, ce_loss, z_loss, ce_loss_all = self.train_micro_batch(micro_batch, ce_denom, ce_all_denom)
 
                     # Update overall CE batch loss.
                     ce_batch_loss += ce_loss.detach()
