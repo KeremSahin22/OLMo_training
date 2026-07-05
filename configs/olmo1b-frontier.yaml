@@ -16,7 +16,9 @@ model:
   weight_tying: true
   alibi: false
   rope: true
-  flash_attention: false  # not supported on MI250X
+  flash_attention: false  # false = skip the flash_attn *package* path (not installed). torch SDPA
+                          # already auto-selects the fused AOTriton flash kernel on this ROCm build
+                          # (verified ~10x faster than math), so attention is fused regardless.
   attention_dropout: 0.0
   attention_layer_norm: false
   multi_query_attention: false
