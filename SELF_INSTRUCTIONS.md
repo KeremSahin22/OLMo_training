@@ -138,9 +138,12 @@ e.g. 4 nodes: 4 × 8 × 4 = 128   (smoketest uses 8 to run fast)
 
 Runs 100 steps on 1 node with batch size 8 to verify the full pipeline end-to-end.
 
+The smoketest is fully isolated from the full run: it uses its own `run_name`/`save_folder`
+(`checkpoints/olmo1b-smoketest/`) with `try_load_latest_save=false`, so it always starts from
+a fresh model, never resumes anything, and never touches the full run's checkpoints. It is
+safe to run even while a full run is queued or running. No checkpoint cleanup is needed.
+
 ```bash
-# Delete old checkpoints so it starts clean (important — see note below)
-rm -rf /lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/olmo1b-frontier/
 mkdir -p /lustre/orion/lrn089/scratch/kerem.sahin/logs
 
 cd /lustre/orion/lrn089/scratch/kerem.sahin/OLMo_training
@@ -148,10 +151,10 @@ git pull
 sbatch scripts/frontier_smoketest.sh
 ```
 
-> **Why delete checkpoints:** `max_duration=100` in the smoketest is an integer step count.
-> If a checkpoint from a previous run exists (e.g. step110), OLMo loads it and immediately
-> exits because it's already past step 100. Always start the smoketest clean.
-> (The full run uses `"50e9T"` which is token-based and handles restarts correctly.)
+> **History note:** the smoketest used to share the full run's `save_folder`
+> (`checkpoints/olmo1b-frontier-full/`). If a smoketest was run with that older script, delete
+> its leftover `step*` checkpoints from that folder before launching the full run — otherwise
+> `try_load_latest_save` makes the full run silently resume from smoketest weights.
 
 Watch logs:
 ```bash
@@ -170,9 +173,11 @@ What to verify:
 # 7. W&B sync
 
 Wandb is configured with `WANDB_MODE=offline` in both run scripts (compute nodes have no internet).
-Offline run files are written to:
+Offline run files are written under the run's save folder:
 ```
-/lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/olmo1b-frontier/wandb/wandb/offline-run-*/
+/lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/<run_name>/wandb/wandb/offline-run-*/
+# full run:  <run_name> = olmo1b-frontier-full
+# smoketest: <run_name> = olmo1b-smoketest
 ```
 
 Sync to the cloud from the login node while the job runs or after it finishes:
@@ -185,13 +190,14 @@ cd /lustre/orion/lrn089/scratch/kerem.sahin/OLMo_training
 bash scripts/wandb_sync.sh
 ```
 
-The script syncs every 60 seconds. Each iteration uploads new chunks for in-progress runs,
-and skips runs that already have a `.synced` marker (fully uploaded). W&B project
-`olmo-1b-replication` and run `olmo1b-frontier` are created automatically on first sync.
+The script syncs every 60 seconds and defaults to the full run; pass a run name to sync a
+different one (e.g. `bash scripts/wandb_sync.sh olmo1b-smoketest`). Re-syncing an already-synced
+run is harmless (wandb sync is incremental/idempotent). The W&B project `olmo-1b-replication`
+and the run are created automatically on first sync.
 
 To sync a specific run manually:
 ```bash
-wandb sync /lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/olmo1b-frontier/wandb/wandb/offline-run-YYYYMMDD_HHMMSS-RUNID
+wandb sync /lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/olmo1b-frontier-full/wandb/wandb/offline-run-YYYYMMDD_HHMMSS-RUNID
 ```
 
 ---
@@ -233,9 +239,9 @@ automatically loads the latest checkpoint and continues toward the 50B token bud
 - `{label}/CrossEntropyLoss`, `{label}/CrossEntropyLoss_all_tokens`
 - `eval/prefix_matching_top{1,2,3}_{score,layer,head}` — induction head diagnostic
 
-**W&B x-axes:**
-- `train/global_train_tokens_seen` — all tokens seen (masked + unmasked), governs budget
-- `train/global_effective_tokens_seen` — non-masked tokens only
+**W&B x-axes** (registered via `wandb.define_metric` in `scripts/train.py`):
+- `throughput/total_tokens` — all tokens seen (masked + unmasked), governs budget; default x-axis for `train/*`, `optim/*`, `throughput/*`
+- `throughput/effective_tokens` — non-masked tokens only; switch any chart to it in the W&B UI
 
 ---
 

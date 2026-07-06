@@ -1,6 +1,6 @@
 # Project Status — OLMo-1B Replication on Frontier
 
-Last updated: 2026-07-03 (W&B sync fix verified)
+Last updated: 2026-07-06 (full run crashed at step-200 checkpoint save — shared-FS rename race; fixed with OLMO_SHARED_FS=1)
 
 ---
 
@@ -21,23 +21,51 @@ Last updated: 2026-07-03 (W&B sync fix verified)
   `wandb sync` a path with a trailing slash, which caused it to report "nothing to sync" even on
   never-synced runs. Stripped the trailing slash (`run_dir="${run_dir%/}"`) before the sync call —
   confirmed working via a fresh `sbatch scripts/frontier_smoketest.sh` run synced automatically.
+- **Smoketest isolated from the full run (2026-07-06):** `frontier_smoketest.sh` previously wrote
+  checkpoints into the full run's `save_folder` (`checkpoints/olmo1b-frontier-full/`), so the full
+  run's `try_load_latest_save` would silently resume from smoketest weights (100 steps at global
+  batch 8), and a smoketest launched mid-run could rotate out a real checkpoint
+  (`save_num_checkpoints_to_keep: 2`). The smoketest now uses its own
+  `run_name`/`save_folder` (`olmo1b-smoketest`) with `try_load_latest_save=false` — safe to run
+  any time, no checkpoint cleanup needed before it.
+
+- **Full run crashed at the step-200 checkpoint save (2026-07-06, job 4944229):** the error
+  `Checkpoint for step 200 already exists, use --save_overwrite` was NOT a real pre-existing
+  checkpoint. Without `OLMO_SHARED_FS=1`, `get_fs_local_rank()` falls back to the node-local
+  rank, so all 4 node leaders (global ranks 0/8/16/24) raced the `step200-tmp -> step200`
+  rename on shared Lustre; a losing rank got EEXIST (surfaced as `FileExistsError`, wrapped
+  into the misleading message) and took the job down. Step 100 saved fine only by timing luck.
+  Fixed two ways: `export OLMO_SHARED_FS=1` in all Frontier run scripts (single filesystem
+  leader, matching upstream OLMo's LUMI setup), and `_temporary_wd` in `olmo/checkpoint.py`
+  now tolerates ENOENT/EEXIST/ENOTEMPTY from a losing rename when the final dir exists.
 
 ---
 
 ## Immediate next step
 
-W&B sync is verified working. Launch the full 4-node training job:
+Recover the crashed full run and resubmit:
 
 ```bash
-# 1. Pull the wandb_sync.sh trailing-slash fix
 cd /lustre/orion/lrn089/scratch/kerem.sahin/OLMo_training
+
+# 1. Pull the fix (OLMO_SHARED_FS=1 + rename-race tolerance)
 git pull
 
-# 2. Start the sync loop in a separate terminal (safe to start before submitting —
-#    it polls and idles harmlessly until a run directory appears)
+# 2. Inspect what the crash left behind. The step200 rename DID land (one leader won),
+#    and all ranks had finished writing before any rename started, so step200 should be
+#    complete — but verify it matches step100 before trusting it:
+ls /lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/olmo1b-frontier-full/
+ls /lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/olmo1b-frontier-full/step100 | wc -l
+ls /lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/olmo1b-frontier-full/step200 | wc -l
+#    If the counts differ or step200 looks short, remove it so resume falls back to step100:
+#    rm -rf .../olmo1b-frontier-full/step200
+#    Also remove any leftover step*-tmp dirs (harmless to resume, but wasted space):
+rm -rf /lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/olmo1b-frontier-full/step*-tmp
+
+# 3. Start the sync loop in a separate terminal (safe to start before submitting)
 bash scripts/wandb_sync.sh
 
-# 3. Submit the full run
+# 4. Resubmit — try_load_latest_save resumes from the latest intact checkpoint
 sbatch scripts/frontier_run.sh
 ```
 

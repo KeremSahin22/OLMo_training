@@ -1050,7 +1050,7 @@ class Trainer:
         if (attention_mask := batch.get("attention_mask")) is not None:
             base_mask &= attention_mask[..., 1:] != 0.0
         if (instance_mask := batch.get("instance_mask")) is not None:
-            base_mask &= instance_mask
+            base_mask &= instance_mask.unsqueeze(-1)
         eff_mask = base_mask.clone()
         if self.cfg.data.mask_repeated_tokens is not None:
             repeat_mask = repeated_token_loss_mask(

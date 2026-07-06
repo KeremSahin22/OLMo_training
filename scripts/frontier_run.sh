@@ -33,6 +33,11 @@ export MPICH_GPU_SUPPORT_ENABLED=1
 export HF_HOME=/lustre/orion/lrn089/scratch/kerem.sahin/.cache/huggingface
 # Compute nodes block outbound internet; log wandb offline and sync from login node after.
 export WANDB_MODE=offline
+# All nodes share Lustre. Without this, every node's local rank 0 thinks it owns checkpoint
+# directory management (get_fs_local_rank falls back to local rank) and the four leaders race
+# in the step*-tmp -> step* rename, which can crash a save with a spurious
+# "Checkpoint for step N already exists" (observed at step 200 on 2026-07-06).
+export OLMO_SHARED_FS=1
 
 # --- Distributed transport (RCCL over Slingshot) ---
 # rccl-net-plugin/1.0 (loaded above) routes RCCL over the Slingshot/CXI fabric instead of TCP

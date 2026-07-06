@@ -25,6 +25,8 @@ cd /lustre/orion/lrn089/scratch/kerem.sahin/OLMo_training
 export ROCR_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export MPICH_GPU_SUPPORT_ENABLED=1
 export WANDB_MODE=offline
+# Nodes share Lustre — one filesystem leader for checkpoint dir management (see frontier_run.sh).
+export OLMO_SHARED_FS=1
 
 # ---- knobs (override on the command line) ----
 STRATEGY=${STRATEGY:-fsdp}          # fsdp | ddp   (ddp = no sharding, full model per GCD)

@@ -1,3 +1,4 @@
+import errno
 import gc
 import io
 import logging
@@ -587,10 +588,14 @@ class Checkpointer(metaclass=ABCMeta):
             # Replace temp directory with target checkpoint directory.
             try:
                 checkpoint_dir_tmp.replace(checkpoint_dir)
-            except FileNotFoundError:
+            except OSError as e:
                 # Caught when another (file-system) local rank 0 has already replaced the tmp directory.
                 # This can happen when nodes are saving to a common NFS drive but otherwise have distinct
-                # file-systems.
+                # file-systems, or on a shared filesystem when OLMO_SHARED_FS is not set: the losing
+                # rank sees ENOENT if its tmp dir is already gone, or EEXIST/ENOTEMPTY if the target
+                # was already renamed into place while its own tmp dir still existed.
+                if e.errno not in (errno.ENOENT, errno.EEXIST, errno.ENOTEMPTY):
+                    raise
                 if not checkpoint_dir.exists():
                     raise
 
