@@ -3,7 +3,7 @@
 #SBATCH -J olmo1b-train
 #SBATCH -o /lustre/orion/lrn089/scratch/kerem.sahin/logs/%x-%j.out
 #SBATCH -e /lustre/orion/lrn089/scratch/kerem.sahin/logs/%x-%j.err
-#SBATCH -N 4                  # <--- change number of nodes here
+#SBATCH -N 8                  # <--- change number of nodes here
 #SBATCH --gpus-per-node=8     # always 8 on Frontier (fixed per node)
 #SBATCH -t 24:00:00
 #SBATCH -p extended
@@ -14,8 +14,8 @@
 #
 # global_train_batch_size in olmo1b-frontier.yaml is FIXED at 2048 (matches OLMo-1B) and is
 # INDEPENDENT of node count — OLMo derives grad-accumulation automatically:
-#   device_train_batch_size = 2048 / (N_nodes * 8)   # 4 nodes -> 64 per GCD
-#   grad_accum_microsteps    = device_train_batch_size / device_train_microbatch_size(=8)  # -> 8
+#   device_train_batch_size = 2048 / (N_nodes * 8)   # 8 nodes -> 32 per GCD
+#   grad_accum_microsteps    = device_train_batch_size / device_train_microbatch_size(=8)  # -> 4
 # So changing -N only changes how many microsteps accumulate per step; do NOT lower
 # global_train_batch_size to N*8*mbs (that was the smoke-test convention and would shrink
 # the batch ~16x, breaking the replication). Peak memory is set by mbs=8 (~47.6 GB), unchanged
