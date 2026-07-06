@@ -573,7 +573,12 @@ class Checkpointer(metaclass=ABCMeta):
         # creating the temp directory from rank 0 might not be immediately
         # realized in the file systems of the other ranks.
         # So we wait here across all ranks until that tmp checkpoint directory is visible.
-        wait_for(lambda: checkpoint_dir_tmp.exists(), "Waiting for checkpoint directory", timeout=10.0)
+        # With OLMO_SHARED_FS=1 at multi-node scale (observed at 8 nodes / 64 ranks), Lustre
+        # metadata propagation to other nodes' clients can exceed 10s under concurrent
+        # checkpoint I/O load — a real TimeoutError killed the job at step 1100 on 2026-07-06.
+        # This wait only gates on filesystem visibility, not real progress, so a generous
+        # timeout costs nothing in the common case.
+        wait_for(lambda: checkpoint_dir_tmp.exists(), "Waiting for checkpoint directory", timeout=120.0)
 
         barrier()
 
@@ -603,7 +608,8 @@ class Checkpointer(metaclass=ABCMeta):
         # replacing the temp directory with the final directory from rank 0 might not be immediately
         # realized in the file systems of the other ranks.
         # So we wait here across all ranks until that final checkpoint directory is visible.
-        wait_for(lambda: checkpoint_dir.exists(), "Waiting for checkpoint directory", timeout=10.0)
+        # See the comment above the first wait_for in this function for why this is generous.
+        wait_for(lambda: checkpoint_dir.exists(), "Waiting for checkpoint directory", timeout=120.0)
 
         barrier()
 

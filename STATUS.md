@@ -1,6 +1,6 @@
 # Project Status — OLMo-1B Replication on Frontier
 
-Last updated: 2026-07-06 (full run crashed at step-200 checkpoint save — shared-FS rename race; fixed with OLMO_SHARED_FS=1)
+Last updated: 2026-07-06 (full run crashed AGAIN at step-1100 checkpoint save on 8 nodes — 10s wait_for timeout too tight for cross-node Lustre visibility; bumped to 120s)
 
 ---
 
@@ -39,6 +39,19 @@ Last updated: 2026-07-06 (full run crashed at step-200 checkpoint save — share
   leader, matching upstream OLMo's LUMI setup), and `_temporary_wd` in `olmo/checkpoint.py`
   now tolerates ENOENT/EEXIST/ENOTEMPTY from a losing rename when the final dir exists.
 
+- **Full run crashed AGAIN at the step-1100 checkpoint save (2026-07-06, first 8-node job):**
+  `TimeoutError: Waiting for checkpoint directory timed out`, from `_temporary_wd` in
+  `olmo/checkpoint.py`. This is the flip side of the `OLMO_SHARED_FS=1` fix above: with it set,
+  only true global rank 0 (on one node) creates `step1100-tmp`; every other rank across all 8
+  nodes just polls for it to appear via `wait_for(..., timeout=10.0)`. All 8 ranks on one
+  non-leader node timed out — cross-node Lustre metadata visibility took longer than 10s under
+  the I/O load of 64 ranks flushing sharded checkpoint state at once (this got measurably worse
+  going from 4 to 8 nodes: more concurrent writers hitting the same metadata server). Not a race
+  or a real bug, just too tight an SLA. Fixed by bumping both `wait_for` timeouts in
+  `_temporary_wd` (`olmo/checkpoint.py`, tmp-dir-visible and final-rename-visible waits) from
+  10s to 120s — this only gates on filesystem propagation with a `barrier()` right after, so a
+  longer timeout costs nothing in the common case.
+
 ---
 
 ## Immediate next step
@@ -48,19 +61,15 @@ Recover the crashed full run and resubmit:
 ```bash
 cd /lustre/orion/lrn089/scratch/kerem.sahin/OLMo_training
 
-# 1. Pull the fix (OLMO_SHARED_FS=1 + rename-race tolerance)
+# 1. Pull the fix (wait_for timeout bumped 10s -> 120s in _temporary_wd)
 git pull
 
-# 2. Inspect what the crash left behind. The step200 rename DID land (one leader won),
-#    and all ranks had finished writing before any rename started, so step200 should be
-#    complete — but verify it matches step100 before trusting it:
+# 2. The step1100 save failed WHILE creating the tmp dir, before any writing happened, so
+#    there is no partial step1100 checkpoint to worry about (unlike the earlier step200
+#    incident). Just remove the empty/partial step1100-tmp leftover:
 ls /lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/olmo1b-frontier-full/
-ls /lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/olmo1b-frontier-full/step100 | wc -l
-ls /lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/olmo1b-frontier-full/step200 | wc -l
-#    If the counts differ or step200 looks short, remove it so resume falls back to step100:
-#    rm -rf .../olmo1b-frontier-full/step200
-#    Also remove any leftover step*-tmp dirs (harmless to resume, but wasted space):
-rm -rf /lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/olmo1b-frontier-full/step*-tmp
+rm -rf /lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/olmo1b-frontier-full/step1100-tmp
+#    try_load_latest_save will fall back to step1000 (the last successful save).
 
 # 3. Start the sync loop in a separate terminal (safe to start before submitting)
 bash scripts/wandb_sync.sh
