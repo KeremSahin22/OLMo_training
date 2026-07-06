@@ -64,13 +64,19 @@ tokenizer:
 save_folder: /lustre/orion/lrn089/scratch/kerem.sahin/checkpoints/${run_name}
 save_overwrite: true  # required with try_load_latest_save: rewrites config.yaml/data-indices on each (re)launch. Resume is still gated by an actual checkpoint, not this flag.
 save_interval: 100
-save_num_checkpoints_to_keep: 2
+save_num_checkpoints_to_keep: -1  # -1 = keep ALL checkpoints (no rotation/deletion). At save_interval=100
+                                  # over ~11.9k steps this accumulates ~119 sharded checkpoints; each is
+                                  # ~14-16 GB (model + AdamW optim state, sharded across ranks) -> ~1.8 TB
+                                  # total. Fine within the 50 TB Lustre quota. Raise save_interval if you
+                                  # want fewer, coarser checkpoints.
 # SCALE-UP: add back unsharded checkpoints for long-term storage:
 #   save_interval_unsharded: 10000
 #   save_num_unsharded_checkpoints_to_keep: -1
 
 load_path: null
 try_load_latest_save: true  # automatically resume from latest checkpoint on resubmit
+
+eval_interval: 500  # run evals + prefix-matching (induction) diagnostic every 500 steps (default was 1000)
 
 max_duration: "50e9T"  # 50B total tokens seen (masked tokens still count toward this budget)
 # global_train_batch_size = num_nodes * gpus_per_node * device_train_microbatch_size

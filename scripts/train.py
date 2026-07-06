@@ -121,6 +121,12 @@ def main(cfg: TrainConfig) -> None:
             name=cfg.wandb.name,
             tags=cfg.wandb.tags,
             config=cfg.asdict(exclude=["wandb"]),
+            # Stable run id (= run_name) + resume="allow" so every resubmission APPENDS to the
+            # same W&B run instead of creating a new one per job. Offline segments carry this id
+            # and merge into one cloud run when synced in order. The ~100-step overlap on resume
+            # (we restart from the last checkpoint) is re-logged; W&B keeps the run continuous.
+            id=cfg.run_name,
+            resume="allow",
         )
         # Register custom x-axes so all metrics can be plotted against either
         # total tokens seen (all tokens, including masked) or effective tokens
